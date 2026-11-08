@@ -56,9 +56,11 @@ jobs:
             HOSTCFLAGS="-O2 -fcommon" \
             exynos8895-dream2lte_defconfig
 
+          # ConfigFS HID y USB_G_HID no deben habilitarse juntos.
+          # Usamos ConfigFS para USB HID de NetHunter.
           kernel/scripts/config --file out/.config \
+            --disable USB_G_HID \
             --enable USB_CONFIGFS_F_HID \
-            --enable USB_G_HID \
             --enable MAC80211 \
             --enable BT_RFCOMM
 
@@ -67,18 +69,25 @@ jobs:
             olddefconfig
 
           grep -E \
-            'CONFIG_USB_CONFIGFS_F_HID|CONFIG_USB_G_HID|CONFIG_MAC80211|CONFIG_BT_RFCOMM|CONFIG_ATH9K_HTC|CONFIG_RTL8187' \
+            'CONFIG_USB_CONFIGFS_F_HID|CONFIG_USB_F_HID|CONFIG_USB_G_HID|CONFIG_MAC80211|CONFIG_BT_RFCOMM|CONFIG_ATH9K_HTC|CONFIG_RTL8187' \
             out/.config > kernel-features.txt || true
+
           cat kernel-features.txt
 
           for feature in \
-            USB_CONFIGFS_F_HID USB_G_HID MAC80211 BT_RFCOMM
+            USB_CONFIGFS_F_HID USB_F_HID MAC80211 BT_RFCOMM
           do
             if ! grep -qx "CONFIG_${feature}=y" out/.config; then
               echo "ERROR: CONFIG_${feature} no quedó habilitada tras olddefconfig" >&2
               exit 1
             fi
           done
+
+          # Verificar que USB_G_HID está deshabilitado.
+          if grep -qx 'CONFIG_USB_G_HID=y' out/.config; then
+            echo 'ERROR: USB_G_HID heredado está activado' >&2
+            exit 1
+          fi
 
       - name: Compile test kernel
         shell: bash
