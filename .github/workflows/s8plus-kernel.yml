@@ -1,4 +1,3 @@
-
 name: S8 Plus - Kernel Test
 
 on:
@@ -43,7 +42,7 @@ jobs:
 
           git -C kernel rev-parse HEAD | tee kernel-commit.txt
 
-      - name: Configure dream2lte kernel
+      - name: Configure dream2lte kernel for NetHunter
         shell: bash
         run: |
           set -euxo pipefail
@@ -57,11 +56,29 @@ jobs:
             HOSTCFLAGS="-O2 -fcommon" \
             exynos8895-dream2lte_defconfig
 
+          kernel/scripts/config --file out/.config \
+            --enable USB_CONFIGFS_F_HID \
+            --enable USB_G_HID \
+            --enable MAC80211 \
+            --enable BT_RFCOMM
+
+          make -C kernel O="$GITHUB_WORKSPACE/out" \
+            HOSTCFLAGS="-O2 -fcommon" \
+            olddefconfig
+
           grep -E \
             'CONFIG_USB_CONFIGFS_F_HID|CONFIG_USB_G_HID|CONFIG_MAC80211|CONFIG_BT_RFCOMM|CONFIG_ATH9K_HTC|CONFIG_RTL8187' \
             out/.config > kernel-features.txt || true
-
           cat kernel-features.txt
+
+          for feature in \
+            USB_CONFIGFS_F_HID USB_G_HID MAC80211 BT_RFCOMM
+          do
+            if ! grep -qx "CONFIG_${feature}=y" out/.config; then
+              echo "ERROR: CONFIG_${feature} no quedó habilitada tras olddefconfig" >&2
+              exit 1
+            fi
+          done
 
       - name: Compile test kernel
         shell: bash
@@ -89,8 +106,7 @@ jobs:
 
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image diagnostics/
-            sha256sum diagnostics/Image \
-              > diagnostics/Image.sha256
+            sha256sum diagnostics/Image > diagnostics/Image.sha256
           fi
 
       - name: Upload results
@@ -100,3 +116,4 @@ jobs:
           name: s8plus-kernel-diagnostics
           path: diagnostics/
           retention-days: 7
+          include-hidden-files: true
