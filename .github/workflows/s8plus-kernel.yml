@@ -1,3 +1,7 @@
+# Build-only test for Samsung Galaxy S8+ SM-G955F (dream2lte).
+# Uses ViP3R lineage-20.0 / Android 13 kernel source.
+# DO NOT flash these outputs onto stock Android 9.
+
 name: S8 Plus - Kernel Test
 
 on:
@@ -13,12 +17,14 @@ jobs:
 
     steps:
       - name: Install dependencies
+        shell: bash
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             build-essential bc bison flex \
             libssl-dev libelf-dev libncurses-dev \
-            python3 git cpio rsync
+            device-tree-compiler python3 git cpio rsync
 
       - name: Download kernel and toolchains
         shell: bash
@@ -42,7 +48,7 @@ jobs:
 
           git -C kernel rev-parse HEAD | tee kernel-commit.txt
 
-      - name: Configure dream2lte kernel for NetHunter
+      - name: Configure dream2lte NetHunter test kernel
         shell: bash
         run: |
           set -euxo pipefail
@@ -56,14 +62,16 @@ jobs:
             HOSTCFLAGS="-O2 -fcommon" \
             exynos8895-dream2lte_defconfig
 
-          # NetHunter USB HID via ConfigFS (not the legacy USB_G_HID driver)
-          # Additional USB Wi-Fi drivers are built into the kernel (y).
+          # Enable parent options and NetHunter drivers.
           kernel/scripts/config --file out/.config \
             --disable USB_G_HID \
             --enable USB_CONFIGFS_F_HID \
             --enable MAC80211 \
             --enable BT_RFCOMM \
             --enable BT_RFCOMM_TTY \
+            --enable ATH_CARDS \
+            --enable RT2X00 \
+            --enable WL_MEDIATEK \
             --enable ATH9K_HTC \
             --enable RTL8187 \
             --enable RTL8XXXU \
@@ -82,6 +90,9 @@ jobs:
             MAC80211
             BT_RFCOMM
             BT_RFCOMM_TTY
+            ATH_CARDS
+            RT2X00
+            WL_MEDIATEK
             ATH9K_HTC
             RTL8187
             RTL8XXXU
@@ -89,10 +100,17 @@ jobs:
             MT7601U
           )
 
+          : > kernel-features.txt
+
           for feature in "${features[@]}"; do
-            if ! grep -qx "CONFIG_${feature}=y" out/.config; then
-              echo "ERROR: CONFIG_${feature} not enabled by olddefconfig" >&2
-              grep -E "^(CONFIG_${feature}=|# CONFIG_${feature} is not set)" out/.config || true
+            if grep -qx "CONFIG_${feature}=y" out/.config; then
+              echo "OK: CONFIG_${feature}=y" | tee -a kernel-features.txt
+            else
+              echo "ERROR: CONFIG_${feature} is not enabled (expected =y)" \
+                | tee -a kernel-features.txt >&2
+              grep -E \
+                "^(CONFIG_${feature}=|# CONFIG_${feature} is not set)" \
+                out/.config || true
               exit 1
             fi
           done
@@ -102,11 +120,7 @@ jobs:
             exit 1
           fi
 
-          grep -E \
-            'CONFIG_(USB_CONFIGFS_F_HID|USB_F_HID|USB_G_HID|MAC80211|BT_RFCOMM|ATH9K_HTC|RTL8187|RTL8XXXU|RT2800USB|MT7601U)' \
-            out/.config | tee kernel-features.txt
-
-      - name: Compile NetHunter kernel and device trees
+      - name: Compile kernel and device trees
         shell: bash
         run: |
           set -euxo pipefail
@@ -123,14 +137,13 @@ jobs:
             KCFLAGS="-Wno-error"
 
           for file in Image Image.gz dtb.img; do
-            if [ ! -s "out/arch/arm64/boot/$file" ]; then
-              echo "ERROR: expected output $file is missing or empty" >&2
+            test -s "out/arch/arm64/boot/$file" || {
+              echo "ERROR: missing or empty kernel output: $file" >&2
               exit 1
-            fi
+            }
           done
 
-          ls -lh \
-            out/arch/arm64/boot/Image \
+          ls -lh out/arch/arm64/boot/Image \
             out/arch/arm64/boot/Image.gz \
             out/arch/arm64/boot/dtb.img
 
@@ -140,7 +153,9 @@ jobs:
         run: |
           mkdir -p diagnostics
 
-          for file in kernel-commit.txt kernel-features.txt kernel-final.config; do
+          for file in kernel-commit.txt \
+                      kernel-features.txt \
+                      kernel-final.config; do
             if [ -f "$file" ]; then
               cp "$file" diagnostics/
             fi
@@ -154,7 +169,8 @@ jobs:
             source="out/arch/arm64/boot/$file"
             if [ -s "$source" ]; then
               cp "$source" diagnostics/
-              sha256sum "diagnostics/$file" > "diagnostics/$file.sha256"
+              sha256sum "diagnostics/$file" \
+                > "diagnostics/$file.sha256"
             fi
           done
 
