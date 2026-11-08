@@ -1,0 +1,102 @@
+
+name: S8 Plus - Kernel Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev libncurses-dev \
+            python3 git cpio rsync
+
+      - name: Download kernel and toolchains
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          git clone --depth 1 \
+            --branch lineage-20.0 \
+            https://github.com/ViP3R-KERNELs/kernel_samsung_universal8895.git \
+            kernel
+
+          git clone --depth 1 \
+            --branch lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
+            gcc64
+
+          git clone --depth 1 \
+            --branch lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
+            gcc32
+
+          git -C kernel rev-parse HEAD | tee kernel-commit.txt
+
+      - name: Configure dream2lte kernel
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          export PATH="$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+          make -C kernel O="$GITHUB_WORKSPACE/out" \
+            HOSTCFLAGS="-O2 -fcommon" \
+            exynos8895-dream2lte_defconfig
+
+          grep -E \
+            'CONFIG_USB_CONFIGFS_F_HID|CONFIG_USB_G_HID|CONFIG_MAC80211|CONFIG_BT_RFCOMM|CONFIG_ATH9K_HTC|CONFIG_RTL8187' \
+            out/.config > kernel-features.txt || true
+
+          cat kernel-features.txt
+
+      - name: Compile test kernel
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          export PATH="$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+          make -C kernel O="$GITHUB_WORKSPACE/out" \
+            -j"$(nproc)" Image \
+            HOSTCFLAGS="-O2 -fcommon" \
+            KCFLAGS="-Wno-error"
+
+      - name: Collect diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+          cp kernel-commit.txt diagnostics/ 2>/dev/null || true
+          cp kernel-features.txt diagnostics/ 2>/dev/null || true
+          cp out/.config diagnostics/ 2>/dev/null || true
+
+          if [ -f out/arch/arm64/boot/Image ]; then
+            cp out/arch/arm64/boot/Image diagnostics/
+            sha256sum diagnostics/Image \
+              > diagnostics/Image.sha256
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s8plus-kernel-diagnostics
+          path: diagnostics/
+          retention-days: 7
