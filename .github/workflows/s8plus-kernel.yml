@@ -1,8 +1,5 @@
-# Build-only test for Samsung Galaxy S8+ SM-G955F (dream2lte).
-# Uses ViP3R lineage-20.0 / Android 13 kernel source.
-# DO NOT flash these outputs onto stock Android 9.
 
-name: S8 Plus - Kernel Test
+name: S8 Plus - LineageOS 20 NetHunter Kernel
 
 on:
   workflow_dispatch:
@@ -16,53 +13,71 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Install dependencies
+      - name: Install build dependencies
         shell: bash
         run: |
           set -euxo pipefail
+
           sudo apt-get update
           sudo apt-get install -y \
             build-essential bc bison flex \
             libssl-dev libelf-dev libncurses-dev \
-            device-tree-compiler python3 git cpio rsync
+            device-tree-compiler python3 git \
+            cpio rsync lz4
 
-      - name: Download kernel and toolchains
+      - name: Download matching LineageOS kernel and toolchains
         shell: bash
         run: |
           set -euxo pipefail
 
-          git clone --depth 1 \
-            --branch lineage-20.0 \
-            https://github.com/ViP3R-KERNELs/kernel_samsung_universal8895.git \
+          git clone --depth 1 --branch lineage-20.0 \
+            https://github.com/8890q/android_kernel_samsung_universal8895.git \
             kernel
-
-          git clone --depth 1 \
-            --branch lineage-19.1 \
-            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
-            gcc64
-
-          git clone --depth 1 \
-            --branch lineage-19.1 \
-            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
-            gcc32
 
           git -C kernel rev-parse HEAD | tee kernel-commit.txt
 
-      - name: Configure dream2lte NetHunter test kernel
+          EXPECTED="75a068570871b6f1e03c6972a81013475fdad2f0"
+          ACTUAL="$(git -C kernel rev-parse HEAD)"
+
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "ERROR: Kernel commit differs from installed ROM source"
+            exit 1
+          fi
+
+          git clone --depth 1 --branch lineage-20.0 \
+            https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git \
+            clang
+
+          git clone --depth 1 --branch lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
+            gcc64
+
+          git clone --depth 1 --branch lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
+            gcc32
+
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+
+          clang --version | tee compiler-version.txt
+
+      - name: Configure NetHunter kernel
         shell: bash
         run: |
           set -euxo pipefail
 
-          export PATH="$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/clang/lib64:$GITHUB_WORKSPACE/clang/lib:${LD_LIBRARY_PATH:-}"
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
 
           make -C kernel O="$GITHUB_WORKSPACE/out" \
+            CC=clang \
             HOSTCFLAGS="-O2 -fcommon" \
             exynos8895-dream2lte_defconfig
 
-          # Enable parent options and NetHunter drivers.
+          # NetHunter USB HID, Bluetooth and USB Wi-Fi support
           kernel/scripts/config --file out/.config \
             --disable USB_G_HID \
             --enable USB_CONFIGFS_F_HID \
@@ -79,6 +94,7 @@ jobs:
             --enable MT7601U
 
           make -C kernel O="$GITHUB_WORKSPACE/out" \
+            CC=clang \
             HOSTCFLAGS="-O2 -fcommon" \
             olddefconfig
 
@@ -101,61 +117,68 @@ jobs:
           )
 
           : > kernel-features.txt
+          failed=0
 
           for feature in "${features[@]}"; do
             if grep -qx "CONFIG_${feature}=y" out/.config; then
               echo "OK: CONFIG_${feature}=y" | tee -a kernel-features.txt
             else
-              echo "ERROR: CONFIG_${feature} is not enabled (expected =y)" \
-                | tee -a kernel-features.txt >&2
-              grep -E \
-                "^(CONFIG_${feature}=|# CONFIG_${feature} is not set)" \
-                out/.config || true
-              exit 1
+              echo "ERROR: CONFIG_${feature} is not enabled" \
+                | tee -a kernel-features.txt
+              failed=1
             fi
           done
 
-          if grep -qx 'CONFIG_USB_G_HID=y' out/.config; then
-            echo 'ERROR: legacy USB_G_HID must remain disabled' >&2
-            exit 1
+          if grep -qx "CONFIG_USB_G_HID=y" out/.config; then
+            echo "ERROR: Legacy USB_G_HID is enabled" \
+              | tee -a kernel-features.txt
+            failed=1
           fi
 
-      - name: Compile kernel and device trees
+          exit "$failed"
+
+      - name: Compile LineageOS NetHunter kernel
         shell: bash
         run: |
           set -euxo pipefail
 
-          export PATH="$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/clang/lib64:$GITHUB_WORKSPACE/clang/lib:${LD_LIBRARY_PATH:-}"
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
 
           make -C kernel O="$GITHUB_WORKSPACE/out" \
-            -j"$(nproc)" \
-            Image Image.gz dtb.img \
+            -j4 \
+            CC=clang \
             HOSTCFLAGS="-O2 -fcommon" \
-            KCFLAGS="-Wno-error"
+            KCFLAGS="-Wno-error" \
+            Image Image.gz dtb.img
 
           for file in Image Image.gz dtb.img; do
-            test -s "out/arch/arm64/boot/$file" || {
-              echo "ERROR: missing or empty kernel output: $file" >&2
+            if [ ! -s "out/arch/arm64/boot/$file" ]; then
+              echo "ERROR: Missing output $file"
               exit 1
-            }
+            fi
           done
 
           ls -lh out/arch/arm64/boot/Image \
             out/arch/arm64/boot/Image.gz \
             out/arch/arm64/boot/dtb.img
 
-      - name: Collect diagnostics
+      - name: Collect kernel diagnostics
         if: always()
         shell: bash
         run: |
           mkdir -p diagnostics
 
-          for file in kernel-commit.txt \
-                      kernel-features.txt \
-                      kernel-final.config; do
+          for file in \
+            kernel-commit.txt \
+            compiler-version.txt \
+            kernel-features.txt \
+            kernel-final.config; do
+
             if [ -f "$file" ]; then
               cp "$file" diagnostics/
             fi
@@ -167,6 +190,7 @@ jobs:
 
           for file in Image Image.gz dtb.img; do
             source="out/arch/arm64/boot/$file"
+
             if [ -s "$source" ]; then
               cp "$source" diagnostics/
               sha256sum "diagnostics/$file" \
@@ -174,11 +198,14 @@ jobs:
             fi
           done
 
-      - name: Upload results
+          echo "Diagnostic build only. Do not flash." \
+            > diagnostics/NOT_FLASHABLE.txt
+
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: s8plus-kernel-diagnostics
+          name: s8plus-lineage20-nethunter-diagnostics
           path: diagnostics/
           retention-days: 7
           include-hidden-files: true
